@@ -104,6 +104,9 @@ app.use('/browse/:protocol/:host/*', async (req, res) => {
         if (contentType && contentType.includes('text/html')) {
             let html = response.data.toString('utf-8');
             
+            // Remove <base> tags to prevent them from messing up relative links
+            html = html.replace(/<base[^>]*>/gi, '');
+
             // Replace target="_top" and target="_blank" to keep links in iframe
             html = html.replace(/target="_top"/g, 'target="_self"');
             html = html.replace(/target="_blank"/g, 'target="_self"');
@@ -121,7 +124,6 @@ app.use('/browse/:protocol/:host/*', async (req, res) => {
             } catch(e) {}
 
             document.addEventListener('DOMContentLoaded', function() {
-                // Force forms to submit to self
                 const forms = document.querySelectorAll('form');
                 forms.forEach(f => {
                     if (!f.target) f.target = '_self';
@@ -132,43 +134,53 @@ app.use('/browse/:protocol/:host/*', async (req, res) => {
                 const target = e.target.closest('a');
                 if (target && target.href) {
                     e.preventDefault();
-                    const href = target.getAttribute('href');
                     
-                    // Check if it's already a proxy URL (avoid double proxy)
-                    if (target.href.includes('/browse/')) {
+                    // 1. If it's already a valid proxy path, let it go.
+                    if (target.href.startsWith(window.location.origin + '/browse/')) {
                         window.location.href = target.href;
                         return;
                     }
 
-                    if (href.startsWith('http')) {
-                        window.location.href = '${proxyOrigin}/proxy?url=' + encodeURIComponent(href);
-                        return;
+                    // 2. If it resolved to the proxy root (escaped path), fix it.
+                    // This happens with root-relative links like <a href="/foo">
+                    if (target.href.startsWith(window.location.origin)) {
+                        const rawHref = target.getAttribute('href');
+                        if (rawHref && rawHref.startsWith('/')) {
+                            window.location.href = '${proxyOrigin}${currentProxyPath}' + rawHref;
+                            return;
+                        }
                     }
-                    
-                    if (href.startsWith('/')) {
-                        window.location.href = '${proxyOrigin}${currentProxyPath}' + href;
-                        return;
-                    }
-                    
-                    // Relative links
-                    window.location.href = target.href;
+
+                    // 3. If it's an external link (or absolute link to another domain), proxy it.
+                    // This handles <a href="https://google.com">
+                    window.location.href = '${proxyOrigin}/proxy?url=' + encodeURIComponent(target.href);
                 }
             });
             
             document.addEventListener('submit', function(e) {
                 const target = e.target;
                 const action = target.getAttribute('action');
-                if (!action) return; // Let browser handle submit to self
+                if (!action) return;
 
                 e.preventDefault();
+                
+                // Handle absolute URLs
                 if (action.startsWith('http')) {
                     window.location.href = '${proxyOrigin}/proxy?url=' + encodeURIComponent(action);
-                } else if (action.startsWith('/')) {
-                    window.location.href = '${proxyOrigin}${currentProxyPath}' + action;
-                } else {
-                    const resolved = new URL(action, window.location.href).href;
-                    window.location.href = resolved;
+                    return;
                 }
+                
+                // Handle root-relative URLs
+                if (action.startsWith('/')) {
+                    window.location.href = '${proxyOrigin}${currentProxyPath}' + action;
+                    return;
+                }
+                
+                // Handle relative URLs (let browser resolve against current path)
+                // But we need to submit it. 
+                // Since we prevented default, we have to construct the URL.
+                const resolved = new URL(action, window.location.href).href;
+                window.location.href = resolved;
             });
             </script>
             `;
