@@ -4,6 +4,7 @@ const cors = require('cors');
 const app = express();
 const PORT = 3000;
 
+app.set('trust proxy', 1); // Trust first proxy (Render)
 app.use(cors());
 app.use(express.json());
 
@@ -103,17 +104,38 @@ app.use('/browse/:protocol/:host/*', async (req, res) => {
         if (contentType && contentType.includes('text/html')) {
             let html = response.data.toString('utf-8');
             
+            // Replace target="_top" and target="_blank" to keep links in iframe
+            html = html.replace(/target="_top"/g, 'target="_self"');
+            html = html.replace(/target="_blank"/g, 'target="_self"');
+
             const proxyOrigin = `${req.protocol}://${req.get('host')}`;
             const currentProxyPath = `/browse/${protocol}/${host}`;
             
             const scriptInjection = `
             <script>
+            // Attempt to bypass frame busting
+            try {
+                if (window.self !== window.top) {
+                    // We can't overwrite window.top, but we can try to stop navigation
+                    window.onbeforeunload = function() {
+                        // This is annoying for users, so maybe not.
+                        // Instead, let's just hope the target="_self" replacement works.
+                    };
+                }
+            } catch(e) {}
+
             document.addEventListener('click', function(e) {
                 const target = e.target.closest('a');
                 if (target && target.href) {
                     e.preventDefault();
                     const href = target.getAttribute('href');
                     
+                    // Check if it's already a proxy URL (avoid double proxy)
+                    if (target.href.includes('/browse/')) {
+                        window.location.href = target.href;
+                        return;
+                    }
+
                     if (href.startsWith('http')) {
                         window.location.href = '${proxyOrigin}/proxy?url=' + encodeURIComponent(href);
                         return;
@@ -124,6 +146,7 @@ app.use('/browse/:protocol/:host/*', async (req, res) => {
                         return;
                     }
                     
+                    // Relative links
                     window.location.href = target.href;
                 }
             });
