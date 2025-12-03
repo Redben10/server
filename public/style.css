@@ -68,13 +68,4 @@ button:hover {
     background-color: #45a049;
 }
 
-iframe {
-    flex: 1;
-    width: 100%;
-    border: none;
-    background-color: white;
-    display: none;
-    /* Ensure no white border/margin issues */
-    margin: 0;
-    padding: 0;
-}
+
