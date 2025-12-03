@@ -19,6 +19,10 @@ document.getElementById('proxy-form').addEventListener('submit', function(e) {
         }
 
         // Use the unblocker URL format: /proxy/{url}
-        iframe.src = `https://server.geobattery.com/proxy/${targetUrl}`;
+        // Use relative path if we are on the server, otherwise use absolute path
+        const isProduction = window.location.hostname === 'server.geobattery.com';
+        const proxyBase = isProduction ? '/proxy/' : 'https://server.geobattery.com/proxy/';
+        
+        iframe.src = `${proxyBase}${targetUrl}`;
     }
 });

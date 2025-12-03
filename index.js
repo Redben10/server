@@ -37,7 +37,10 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public/index.html'));
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
     console.log(`Proxy ready at /proxy/`);
 });
+
+// Handle WebSocket upgrades (required for games like Skribbl.io)
+server.on('upgrade', unblocker.onUpgrade);
