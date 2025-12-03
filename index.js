@@ -1,120 +1,125 @@
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
+const path = require('path');
+const url = require('url');
+
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
 
-// --- CONFIG ---
-const BLOCKED_HOST = 'chromebook.ccpsnet.net';
-const PROXY_BASE = '/p';
+// Serve the unlock folder as static files
+app.use(express.static(path.join(__dirname, '../unlock')));
 
-// --- MIDDLEWARE ---
-
-// 1. Block the specific domain
-app.use((req, res, next) => {
-    if (req.url.includes(BLOCKED_HOST)) {
-        return res.status(403).send('Blocked');
+// Helper to check if string is a URL
+function isValidUrl(string) {
+    try {
+        new URL(string);
+        return true;
+    } catch (_) {
+        return false;
     }
-    const referer = req.get('Referer');
-    if (referer && referer.includes(BLOCKED_HOST)) {
-        return res.status(403).send('Blocked');
-    }
-    next();
-});
-
-// --- PROXY LOGIC ---
-
-// Helper to construct the target URL from the proxy path
-// Path: /p/https/example.com/foo/bar
-function getTargetUrl(path) {
-    // Remove /p/
-    const parts = path.substring(PROXY_BASE.length + 1).split('/');
-    // parts[0] = protocol (https)
-    // parts[1] = host (example.com)
-    // parts[2...] = path
-    if (parts.length < 2) return null;
-    
-    const protocol = parts[0];
-    const host = parts[1];
-    const rest = parts.slice(2).join('/');
-    
-    return `${protocol}://${host}/${rest}`;
 }
 
-// Main Proxy Handler
-app.use(PROXY_BASE + '/:protocol/:host/*', async (req, res) => {
-    const originalUrl = req.originalUrl; // /p/https/example.com/foo?query=1
-    const targetUrl = getTargetUrl(originalUrl.split('?')[0]) + (originalUrl.includes('?') ? '?' + originalUrl.split('?')[1] : '');
+// Helper to fix relative URLs in HTML
+function rewriteLinks(html, baseUrl) {
+    const base = new URL(baseUrl);
+    const origin = base.origin;
+    
+    // This is a very basic regex-based rewriter. 
+    // For a production proxy, use a proper HTML parser.
+    
+    // Replace href="..."
+    let newHtml = html.replace(/href="([^"]*)"/g, (match, p1) => {
+        if (p1.startsWith('http')) {
+            return `href="/proxy?url=${encodeURIComponent(p1)}"`;
+        } else if (p1.startsWith('//')) {
+            return `href="/proxy?url=${encodeURIComponent('https:' + p1)}"`;
+        } else if (p1.startsWith('/')) {
+            return `href="/proxy?url=${encodeURIComponent(origin + p1)}"`;
+        } else {
+            // Relative path without leading /
+             return `href="/proxy?url=${encodeURIComponent(new URL(p1, baseUrl).href)}"`;
+        }
+    });
 
-    if (!targetUrl) return res.status(400).send('Invalid URL');
+    // Replace src="..."
+    newHtml = newHtml.replace(/src="([^"]*)"/g, (match, p1) => {
+        if (p1.startsWith('http')) {
+            return `src="/proxy?url=${encodeURIComponent(p1)}"`;
+        } else if (p1.startsWith('//')) {
+            return `src="/proxy?url=${encodeURIComponent('https:' + p1)}"`;
+        } else if (p1.startsWith('/')) {
+            return `src="/proxy?url=${encodeURIComponent(origin + p1)}"`;
+        } else {
+             return `src="/proxy?url=${encodeURIComponent(new URL(p1, baseUrl).href)}"`;
+        }
+    });
+    
+    // Replace action="..." for forms
+    newHtml = newHtml.replace(/action="([^"]*)"/g, (match, p1) => {
+         if (p1.startsWith('http')) {
+            return `action="/proxy?url=${encodeURIComponent(p1)}"`;
+        } else if (p1.startsWith('//')) {
+            return `action="/proxy?url=${encodeURIComponent('https:' + p1)}"`;
+        } else if (p1.startsWith('/')) {
+            return `action="/proxy?url=${encodeURIComponent(origin + p1)}"`;
+        } else {
+             return `action="/proxy?url=${encodeURIComponent(new URL(p1, baseUrl).href)}"`;
+        }
+    });
+
+    return newHtml;
+}
+
+app.get('/proxy', async (req, res) => {
+    let targetUrl = req.query.url;
+
+    if (!targetUrl) {
+        return res.status(400).send('URL is required');
+    }
+
+    // If it's not a URL, treat it as a search query
+    if (!isValidUrl(targetUrl) && !targetUrl.includes('.') && !targetUrl.startsWith('http')) {
+        targetUrl = `https://www.google.com/search?q=${encodeURIComponent(targetUrl)}`;
+    } else if (!targetUrl.startsWith('http')) {
+        // Try adding https:// if missing
+        targetUrl = 'https://' + targetUrl;
+    }
 
     try {
+        console.log(`Proxying request to: ${targetUrl}`);
+        
         const response = await axios.get(targetUrl, {
-            responseType: 'arraybuffer',
+            responseType: 'arraybuffer', // Handle images/binary too
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                // We fake the referer to be the target site
-                'Referer': new URL(targetUrl).origin
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             },
             validateStatus: () => true // Don't throw on 404/500
         });
 
-        // Copy headers
-        Object.keys(response.headers).forEach(key => {
-            // Skip problematic headers
-            if (['content-length', 'content-encoding', 'transfer-encoding'].includes(key.toLowerCase())) return;
-            res.setHeader(key, response.headers[key]);
-        });
+        // Forward headers
+        const contentType = response.headers['content-type'];
+        if (contentType) {
+            res.setHeader('Content-Type', contentType);
+        }
 
-        // Remove blocking headers
-        res.removeHeader('X-Frame-Options');
-        res.removeHeader('Content-Security-Policy');
-        res.removeHeader('X-Content-Type-Options');
-
-        // Send data
-        res.status(response.status);
-        res.send(response.data);
+        // If it's HTML, rewrite links
+        if (contentType && contentType.includes('text/html')) {
+            const html = response.data.toString('utf-8');
+            const rewrittenHtml = rewriteLinks(html, targetUrl);
+            res.send(rewrittenHtml);
+        } else {
+            // Just send the data (images, css, etc)
+            res.send(response.data);
+        }
 
     } catch (error) {
-        console.error('Proxy Error:', error.message);
-        res.status(500).send('Proxy Error');
+        console.error('Proxy error:', error.message);
+        res.status(500).send(`Error fetching URL: ${error.message}`);
     }
-});
-
-// Catch-All Handler for "Escaped" Relative Links
-// If a page at /p/https/site.com/ requests /style.css, it comes here.
-app.use((req, res, next) => {
-    if (req.url === '/' || req.url === '/events') return next();
-
-    const referer = req.get('Referer');
-    if (referer && referer.includes(PROXY_BASE)) {
-        // Try to extract the base from the referer
-        // Referer: http://localhost:3000/p/https/example.com/foo
-        const match = referer.match(/\/p\/(https?)\/([^\/]+)/);
-        if (match) {
-            const protocol = match[1];
-            const host = match[2];
-            // Redirect to the correct proxy path
-            return res.redirect(`${PROXY_BASE}/${protocol}/${host}${req.url}`);
-        }
-    }
-    
-    res.status(404).send('Not Found');
-});
-
-// --- SSE ENDPOINT (Requested) ---
-app.get('/events', (req, res) => {
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.write('data: connected\n\n');
-});
-
-app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
 });
 
 app.listen(PORT, () => {
