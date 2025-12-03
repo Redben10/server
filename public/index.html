@@ -3,18 +3,58 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Unlock Web Proxy</title>
+    <title>Unblocker</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="container">
-        <h1>Unlock the Web</h1>
-        <p>Enter a URL or search term to browse freely.</p>
-        <form id="proxy-form">
-            <input type="text" id="url-input" placeholder="Search Google or enter a URL (e.g., example.com)" required>
-            <button type="submit">Go</button>
-        </form>
+        <h1>Web Unblocker</h1>
+        <p>Browse the web freely. <span id="status">Checking status...</span></p>
+        
+        <div class="search-box">
+            <input type="text" id="input" placeholder="Search Google or type a URL...">
+            <button id="go-btn">Go</button>
+        </div>
+        
+        <div class="info">
+            <p>Blocks <code>chromebook.ccpsnet.net</code> automatically.</p>
+        </div>
     </div>
-    <script src="script.js"></script>
+
+    <script>
+        const input = document.getElementById('input');
+        const btn = document.getElementById('go-btn');
+        const statusSpan = document.getElementById('status');
+
+        // SSE Connection
+        const evtSource = new EventSource("/status");
+        evtSource.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            statusSpan.textContent = "Server Status: " + data.status;
+            statusSpan.style.color = "#4caf50";
+        };
+
+        function handleGo() {
+            let value = input.value.trim();
+            if (!value) return;
+
+            // Simple heuristic to check if it's a URL or search
+            const isUrl = value.startsWith('http://') || value.startsWith('https://') || (value.includes('.') && !value.includes(' '));
+            
+            if (isUrl) {
+                if (!value.startsWith('http')) {
+                    value = 'https://' + value;
+                }
+                window.location.href = `/proxy?url=${encodeURIComponent(value)}`;
+            } else {
+                window.location.href = `/search?q=${encodeURIComponent(value)}`;
+            }
+        }
+
+        btn.addEventListener('click', handleGo);
+        input.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') handleGo();
+        });
+    </script>
 </body>
 </html>
