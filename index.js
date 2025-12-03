@@ -29,12 +29,12 @@ const unblocker = new Unblocker({
 // This handles all the complex rewriting of HTML, JS, CSS, cookies, etc.
 app.use(unblocker);
 
-// Serve the unlock folder as static files
-app.use(express.static(path.join(__dirname, '../unlock')));
+// Serve the public folder as static files
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Fallback for the root URL to serve the frontend
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, '../unlock/index.html'));
+    res.sendFile(path.join(__dirname, 'public/index.html'));
 });
 
 app.listen(PORT, () => {

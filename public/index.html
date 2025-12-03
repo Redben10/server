@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Unlock Web Proxy</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Unlock the Web</h1>
+        <p>Enter a URL or search term to browse freely.</p>
+        <form id="proxy-form">
+            <input type="text" id="url-input" placeholder="Search Google or enter a URL (e.g., example.com)" required>
+            <button type="submit">Go</button>
+        </form>
+    </div>
+    <iframe id="content-frame" src="about:blank" title="Proxied Content"></iframe>
+    <script src="script.js"></script>
+</body>
+</html>
