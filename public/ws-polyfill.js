@@ -11,7 +11,38 @@
 
     class ProxiedWebSocket {
         constructor(url, protocols) {
-            this.url = url;
+            // Handle relative WebSocket URLs (e.g. new WebSocket('/socket.io'))
+            // We need to resolve them against the REAL target URL, not the proxy URL.
+            
+            // Extract current target from window.location.pathname
+            // Path is /service/https://site.com/foo
+            let currentPath = window.location.pathname;
+            let targetBase = '';
+            
+            if (currentPath.startsWith('/service/')) {
+                targetBase = currentPath.substring('/service/'.length);
+                // Fix protocol slashes if needed
+                if (targetBase.startsWith('http:/') && !targetBase.startsWith('http://')) targetBase = targetBase.replace('http:/', 'http://');
+                if (targetBase.startsWith('https:/') && !targetBase.startsWith('https://')) targetBase = targetBase.replace('https:/', 'https://');
+            }
+
+            let finalUrl = url;
+            
+            // If it's a relative URL, resolve it against the target base
+            if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
+                try {
+                    // Create a dummy URL object to resolve relative path
+                    // If targetBase is https://site.com/foo, and url is /socket, result is https://site.com/socket
+                    // Then replace http/https with ws/wss
+                    const resolved = new URL(url, targetBase);
+                    finalUrl = resolved.href;
+                    if (finalUrl.startsWith('http')) finalUrl = finalUrl.replace('http', 'ws');
+                } catch (e) {
+                    console.error('[ProxyWS] Failed to resolve relative URL:', url, e);
+                }
+            }
+
+            this.url = finalUrl;
             this.protocols = protocols;
             this.readyState = 0; // CONNECTING
             this.bufferedAmount = 0;
@@ -21,16 +52,16 @@
             this.onclose = null;
             this.sessionId = generateUUID();
             
-            console.log('[ProxyWS] Intercepting WebSocket connection to:', url);
+            console.log('[ProxyWS] Intercepting WebSocket connection to:', finalUrl);
 
             // Connect to the proxy's SSE endpoint for downstream messages
             // We encode the target URL and session ID
-            const sseUrl = `/proxy/ws-connect?target=${encodeURIComponent(url)}&session=${this.sessionId}`;
+            // Note: Updated endpoint to /api/ws-connect
+            const sseUrl = `/api/ws-connect?target=${encodeURIComponent(finalUrl)}&session=${this.sessionId}`;
             this.eventSource = new EventSource(sseUrl);
 
             this.eventSource.onopen = () => {
                 console.log('[ProxyWS] SSE Connected');
-                // We wait for the 'open' event from the server to confirm the real WS is open
             };
 
             this.eventSource.onmessage = (event) => {
@@ -41,7 +72,6 @@
                     if (this.onopen) this.onopen(new Event('open'));
                 } else if (message.type === 'message') {
                     if (this.onmessage) {
-                        // Reconstruct a MessageEvent
                         this.onmessage(new MessageEvent('message', {
                             data: message.data,
                             origin: this.url
@@ -67,7 +97,8 @@
             }
 
             // Send data upstream via HTTP POST
-            fetch('/proxy/ws-send', {
+            // Note: Updated endpoint to /api/ws-send
+            fetch('/api/ws-send', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -92,7 +123,8 @@
             }
 
             // Notify server to close
-            fetch('/proxy/ws-close', {
+            // Note: Updated endpoint to /api/ws-close
+            fetch('/api/ws-close', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ session: this.sessionId })

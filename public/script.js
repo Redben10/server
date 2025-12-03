@@ -1,28 +1,18 @@
 document.getElementById('proxy-form').addEventListener('submit', function(e) {
     e.preventDefault();
-    const input = document.getElementById('url-input').value.trim();
+    let input = document.getElementById('url-input').value.trim();
     
     if (input) {
-        // Redirect to the proxy endpoint
-        // The server handles whether it's a URL or a search query
-        window.location.href = `/proxy?url=${encodeURIComponent(input)}`;
+        // Determine if it's a URL or search
+        if (!input.startsWith('http://') && !input.startsWith('https://')) {
+            if (input.includes('.') && !input.includes(' ')) {
+                input = 'https://' + input;
+            } else {
+                input = 'https://www.google.com/search?q=' + encodeURIComponent(input);
+            }
+        }
+        
+        // Redirect to the path-based proxy endpoint
+        window.location.href = `/service/${input}`;
     }
 });
-
-// Connect to SSE endpoint (as requested)
-const eventSource = new EventSource('/events');
-
-eventSource.onmessage = function(event) {
-    const data = JSON.parse(event.data);
-    console.log('Server Event:', data);
-    
-    const statusDiv = document.getElementById('status');
-    if (data.message) {
-        statusDiv.textContent = data.message;
-    }
-};
-
-eventSource.onerror = function(err) {
-    console.error('EventSource failed:', err);
-    eventSource.close();
-};

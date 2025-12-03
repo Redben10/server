@@ -9,133 +9,138 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.static(path.join(__dirname, 'public')));
-app.use(express.json()); // For parsing JSON bodies in POST requests
+app.use(express.json());
 
-// Store active WebSocket sessions
-// Map<sessionId, { ws: WebSocket, res: Response (SSE) }>
 const sessions = new Map();
-
-// Helper to validate URL
-function isValidUrl(string) {
-    try {
-        new URL(string);
-        return true;
-    } catch (_) {
-        return false;
-    }
-}
 
 // Helper to rewrite URLs in the fetched content
 function rewriteUrls(html, baseUrl) {
     const $ = cheerio.load(html);
     
-    // Inject WS Polyfill at the top of <head>
     $('head').prepend('<script src="/ws-polyfill.js"></script>');
 
-    // Rewrite hrefs
+    // We only need to rewrite ABSOLUTE URLs now.
+    // Relative URLs will naturally resolve against the current path (/service/https://site.com/...)
+    
+    const processUrl = (link) => {
+        if (!link) return link;
+        if (link.startsWith('http://') || link.startsWith('https://')) {
+            // Rewrite absolute URLs to go through /service/
+            // We remove the protocol's double slash to avoid path issues, or just handle it in the route
+            // Let's keep it simple: /service/https://site.com
+            return `/service/${link}`;
+        }
+        // Leave relative URLs alone!
+        return link;
+    };
+
     $('a').each((i, el) => {
         const href = $(el).attr('href');
         if (href && !href.startsWith('#') && !href.startsWith('javascript:')) {
-            try {
-                const absoluteUrl = new URL(href, baseUrl).href;
-                $(el).attr('href', `/proxy?url=${encodeURIComponent(absoluteUrl)}`);
-            } catch (e) {
-                // Ignore invalid URLs
-            }
+            $(el).attr('href', processUrl(href));
         }
     });
 
-    // Rewrite srcs (images, scripts, etc.)
     $('img, script, link, iframe').each((i, el) => {
         const src = $(el).attr('src');
-        const href = $(el).attr('href'); // for link tags
+        const href = $(el).attr('href');
         
         if (src) {
-            try {
-                const absoluteUrl = new URL(src, baseUrl).href;
-                // Don't rewrite the polyfill script we just added
-                if (absoluteUrl.includes('/ws-polyfill.js')) return;
-                
-                $(el).attr('src', `/proxy?url=${encodeURIComponent(absoluteUrl)}`);
-            } catch (e) {}
+            // Don't rewrite the polyfill
+            if (src.includes('/ws-polyfill.js')) return;
+            $(el).attr('src', processUrl(src));
         }
-        
         if (href && $(el).is('link')) {
-            try {
-                const absoluteUrl = new URL(href, baseUrl).href;
-                $(el).attr('href', `/proxy?url=${encodeURIComponent(absoluteUrl)}`);
-            } catch (e) {}
+            $(el).attr('href', processUrl(href));
         }
     });
 
-    // Rewrite form actions
     $('form').each((i, el) => {
         const action = $(el).attr('action');
         if (action) {
-            try {
-                const absoluteUrl = new URL(action, baseUrl).href;
-                $(el).attr('action', `/proxy?url=${encodeURIComponent(absoluteUrl)}`);
-            } catch (e) {}
+            $(el).attr('action', processUrl(action));
         }
     });
 
     return $.html();
 }
 
-app.get('/proxy', async (req, res) => {
-    let targetUrl = req.query.url;
-
-    if (!targetUrl) {
-        return res.status(400).send('URL is required');
+// Path-based Proxy Handler
+// Matches /service/https://google.com/foo/bar
+app.use('/service/*', async (req, res) => {
+    // Reconstruct the target URL from the request path
+    // req.baseUrl is '/service'
+    // req.path is '/https://google.com/foo/bar' (Note: express might strip slashes)
+    
+    // We need the full original URL after /service/
+    // req.originalUrl is '/service/https://google.com/foo/bar?q=123'
+    
+    let targetPath = req.originalUrl.substring('/service/'.length);
+    
+    // Handle the case where browsers/proxies merge slashes (e.g. https:/google.com)
+    if (targetPath.startsWith('http:/') && !targetPath.startsWith('http://')) {
+        targetPath = targetPath.replace('http:/', 'http://');
+    } else if (targetPath.startsWith('https:/') && !targetPath.startsWith('https://')) {
+        targetPath = targetPath.replace('https:/', 'https://');
     }
 
-    // If it doesn't start with http, and looks like a search query, search google
-    if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
-        if (targetUrl.includes('.') && !targetUrl.includes(' ')) {
-            targetUrl = 'https://' + targetUrl;
-        } else {
-            targetUrl = 'https://www.google.com/search?q=' + encodeURIComponent(targetUrl);
-        }
+    // If it doesn't have a protocol, it might be a relative request that got messed up
+    // But with this structure, relative requests should append correctly.
+    
+    // Basic validation
+    if (!targetPath.startsWith('http')) {
+        return res.status(400).send('Invalid URL protocol');
     }
 
-    // Block the specific domain mentioned by the user
-    if (targetUrl.includes('chromebook.ccpsnet.net')) {
+    // Block the specific domain
+    if (targetPath.includes('chromebook.ccpsnet.net')) {
         return res.status(403).send('Blocked domain');
     }
 
     try {
-        const response = await axios.get(targetUrl, {
+        const response = await axios.get(targetPath, {
             headers: {
-                // Updated User-Agent to a newer Chrome version
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                // Forward cookies if needed (omitted for simplicity, but crucial for sessions)
             },
-            responseType: 'arraybuffer' // Handle binary data like images
+            responseType: 'arraybuffer',
+            validateStatus: () => true // Accept all status codes
         });
 
+        // Forward headers
         const contentType = response.headers['content-type'];
-
-        // If it's HTML, rewrite links
+        if (contentType) res.set('Content-Type', contentType);
+        
+        // Handle redirects manually to keep them in the proxy
+        // (Axios follows redirects by default, but if we get a 3xx, we might want to rewrite it)
+        // Since axios follows them, response.request.res.responseUrl is the final URL.
+        // But if we want to support relative redirects, we rely on the browser.
+        
         if (contentType && contentType.includes('text/html')) {
             const html = response.data.toString('utf-8');
-            const rewrittenHtml = rewriteUrls(html, targetUrl);
-            res.set('Content-Type', 'text/html');
+            // We pass the targetPath as the base, but actually we don't need it for relative link preservation
+            // We only need it if we were resolving relative links to absolute (which we aren't anymore)
+            const rewrittenHtml = rewriteUrls(html, targetPath);
             res.send(rewrittenHtml);
         } else {
-            // Forward other content types directly
-            res.set('Content-Type', contentType);
             res.send(response.data);
         }
 
     } catch (error) {
-        console.error('Proxy error:', error.message);
-        res.status(500).send(`Error fetching URL: ${error.message}`);
+        console.error('Proxy error:', error.message, targetPath);
+        // If it's a 404 from the target, forward it
+        if (error.response) {
+             res.status(error.response.status).send(error.response.data);
+        } else {
+             res.status(500).send(`Error fetching URL: ${error.message}`);
+        }
     }
 });
 
+
 // --- WebSocket Tunneling via SSE ---
 
-// 1. Downstream: Client connects via SSE
-app.get('/proxy/ws-connect', (req, res) => {
+app.get('/api/ws-connect', (req, res) => {
     const targetUrl = req.query.target;
     const sessionId = req.query.session;
 
@@ -143,7 +148,6 @@ app.get('/proxy/ws-connect', (req, res) => {
         return res.status(400).send('Missing target or session');
     }
 
-    // Setup SSE
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
@@ -152,8 +156,6 @@ app.get('/proxy/ws-connect', (req, res) => {
         res.write(`data: ${JSON.stringify({ type, data })}\n\n`);
     };
 
-    // Connect to the REAL WebSocket target
-    // We need to convert http/https to ws/wss
     let wsUrl = targetUrl;
     if (wsUrl.startsWith('http://')) wsUrl = wsUrl.replace('http://', 'ws://');
     if (wsUrl.startsWith('https://')) wsUrl = wsUrl.replace('https://', 'wss://');
@@ -162,35 +164,19 @@ app.get('/proxy/ws-connect', (req, res) => {
 
     try {
         const ws = new WebSocket(wsUrl);
-
         sessions.set(sessionId, { ws, res });
 
-        ws.on('open', () => {
-            sendToClient('open');
-        });
-
-        ws.on('message', (data) => {
-            // Convert buffer to string if needed, or send as base64 if binary
-            // For simplicity, assuming text for now
-            sendToClient('message', data.toString());
-        });
-
-        ws.on('error', (err) => {
-            console.error(`[Proxy] WS Error for ${sessionId}:`, err.message);
-            sendToClient('error', err.message);
-        });
-
+        ws.on('open', () => sendToClient('open'));
+        ws.on('message', (data) => sendToClient('message', data.toString()));
+        ws.on('error', (err) => sendToClient('error', err.message));
         ws.on('close', (code, reason) => {
             sendToClient('close', { code, reason: reason.toString() });
             sessions.delete(sessionId);
             res.end();
         });
 
-        // Clean up if client disconnects SSE
         req.on('close', () => {
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.close();
-            }
+            if (ws.readyState === WebSocket.OPEN) ws.close();
             sessions.delete(sessionId);
         });
 
@@ -200,16 +186,11 @@ app.get('/proxy/ws-connect', (req, res) => {
     }
 });
 
-// 2. Upstream: Client sends data via POST
-app.post('/proxy/ws-send', (req, res) => {
+app.post('/api/ws-send', (req, res) => {
     const { session, data } = req.body;
     const sessionData = sessions.get(session);
 
-    if (!sessionData || !sessionData.ws) {
-        return res.status(404).send('Session not found');
-    }
-
-    if (sessionData.ws.readyState === WebSocket.OPEN) {
+    if (sessionData && sessionData.ws && sessionData.ws.readyState === WebSocket.OPEN) {
         sessionData.ws.send(data);
         res.status(200).send('Sent');
     } else {
@@ -217,37 +198,14 @@ app.post('/proxy/ws-send', (req, res) => {
     }
 });
 
-// 3. Close: Client requests close
-app.post('/proxy/ws-close', (req, res) => {
+app.post('/api/ws-close', (req, res) => {
     const { session } = req.body;
     const sessionData = sessions.get(session);
-
     if (sessionData && sessionData.ws) {
         sessionData.ws.close();
         sessions.delete(session);
     }
     res.status(200).send('Closed');
-});
-
-// Original SSE Endpoint (kept for the status page)
-app.get('/events', (req, res) => {
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-
-    const sendEvent = (data) => {
-        res.write(`data: ${JSON.stringify(data)}\n\n`);
-    };
-
-    sendEvent({ message: 'Connected to proxy server' });
-
-    const interval = setInterval(() => {
-        sendEvent({ timestamp: new Date().toISOString() });
-    }, 10000);
-
-    req.on('close', () => {
-        clearInterval(interval);
-    });
 });
 
 app.listen(PORT, () => {
