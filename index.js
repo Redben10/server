@@ -83,7 +83,7 @@ app.get('/proxy', async (req, res) => {
 
     // If it's not a URL, treat it as a search query
     if (!isValidUrl(targetUrl) && !targetUrl.includes('.') && !targetUrl.startsWith('http')) {
-        targetUrl = `https://www.google.com/search?q=${encodeURIComponent(targetUrl)}`;
+        targetUrl = `https://duckduckgo.com/html/?q=${encodeURIComponent(targetUrl)}`;
     } else if (!targetUrl.startsWith('http')) {
         // Try adding https:// if missing
         targetUrl = 'https://' + targetUrl;
@@ -95,7 +95,7 @@ app.get('/proxy', async (req, res) => {
         const response = await axios.get(targetUrl, {
             responseType: 'arraybuffer', // Handle images/binary too
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             },
             validateStatus: () => true // Don't throw on 404/500
         });
