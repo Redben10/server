@@ -71,31 +71,40 @@ app.get('/proxy', async (req, res) => {
         res.set('Content-Type', contentType);
         
         // Set cookie for subsequent resource requests
-        res.setHeader('Set-Cookie', `proxy_base=${encodeURIComponent(baseUrl)}; Path=/; HttpOnly`);
+        // Added SameSite=None; Secure to allow cross-site usage in iframe
+        res.setHeader('Set-Cookie', `proxy_base=${encodeURIComponent(baseUrl)}; Path=/; HttpOnly; SameSite=None; Secure`);
 
         // If it's HTML, inject script to handle links
         if (contentType && contentType.includes('text/html')) {
             let html = response.data.toString('utf-8');
+            
+            // Rewrite absolute src attributes to go through proxy (helps with CDNs)
+            html = html.replace(/src="(https?:\/\/[^"]+)"/g, (match, url) => `src="/proxy?url=${encodeURIComponent(url)}"`);
             
             const scriptInjection = `
             <script>
             document.addEventListener('click', function(e) {
                 const target = e.target.closest('a');
                 if (target && target.href) {
+                    const href = target.href;
+                    // If it's already pointing to our proxy (relative link resolved), don't double wrap
+                    if (href.startsWith(window.location.origin)) {
+                        return; 
+                    }
                     e.preventDefault();
-                    const realUrl = target.href;
-                    // Use current origin to keep using the proxy
-                    window.location.href = window.location.origin + '/proxy?url=' + encodeURIComponent(realUrl);
+                    window.location.href = window.location.origin + '/proxy?url=' + encodeURIComponent(href);
                 }
             });
             // Override form submissions too
             document.addEventListener('submit', function(e) {
                 const target = e.target;
                 if (target.action) {
+                    const action = target.action;
+                    if (action.startsWith(window.location.origin)) {
+                        return;
+                    }
                     e.preventDefault();
-                    const realUrl = target.action;
-                    // This is a simplification, handling POST/GET params is harder
-                    window.location.href = window.location.origin + '/proxy?url=' + encodeURIComponent(realUrl);
+                    window.location.href = window.location.origin + '/proxy?url=' + encodeURIComponent(action);
                 }
             });
             </script>
