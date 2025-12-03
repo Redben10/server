@@ -43,136 +43,129 @@ app.use((req, res, next) => {
     next();
 });
 
-app.get('/proxy', async (req, res) => {
+// Entry point: /proxy?url=...
+app.get('/proxy', (req, res) => {
     let targetUrl = req.query.url;
-
-    if (!targetUrl) {
-        return res.status(400).send('URL is required');
+    if (!targetUrl) return res.status(400).send('URL is required');
+    if (!targetUrl.startsWith('http')) targetUrl = 'https://' + targetUrl;
+    
+    try {
+        const urlObj = new URL(targetUrl);
+        const protocol = urlObj.protocol.replace(':', '');
+        const host = urlObj.host;
+        const path = urlObj.pathname + urlObj.search;
+        res.redirect(`/browse/${protocol}/${host}${path}`);
+    } catch (e) {
+        res.status(400).send('Invalid URL');
     }
+});
 
-    if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
-        targetUrl = 'https://' + targetUrl;
+// Path-based proxy handler
+app.use('/browse/:protocol/:host/*', async (req, res) => {
+    const protocol = req.params.protocol;
+    const host = req.params.host;
+    const path = req.params[0]; // The wildcard match
+    
+    const targetUrl = `${protocol}://${host}/${path}`;
+    
+    if (targetUrl.includes('chromebook.ccpsnet.net')) {
+        return res.status(403).send('Blocked');
     }
 
     try {
-        // Extract base URL for the cookie
-        const urlObj = new URL(targetUrl);
-        const baseUrl = urlObj.origin;
-
         const response = await axios.get(targetUrl, {
             responseType: 'arraybuffer',
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Referer': baseUrl
-            }
+                'Referer': `${protocol}://${host}/`
+            },
+            validateStatus: () => true 
         });
 
         const contentType = response.headers['content-type'];
         res.set('Content-Type', contentType);
-        
-        // Set cookie for subsequent resource requests
-        // Added SameSite=None; Secure to allow cross-site usage in iframe
-        res.setHeader('Set-Cookie', `proxy_base=${encodeURIComponent(baseUrl)}; Path=/; HttpOnly; SameSite=None; Secure`);
+        res.status(response.status);
 
-        // If it's HTML, inject script to handle links
         if (contentType && contentType.includes('text/html')) {
             let html = response.data.toString('utf-8');
             
-            // Rewrite absolute src attributes to go through proxy (helps with CDNs)
-            html = html.replace(/src="(https?:\/\/[^"]+)"/g, (match, url) => `src="/proxy?url=${encodeURIComponent(url)}"`);
+            const proxyOrigin = `${req.protocol}://${req.get('host')}`;
+            const currentProxyPath = `/browse/${protocol}/${host}`;
             
             const scriptInjection = `
             <script>
             document.addEventListener('click', function(e) {
                 const target = e.target.closest('a');
                 if (target && target.href) {
-                    const href = target.href;
-                    // If it's already pointing to our proxy (relative link resolved), don't double wrap
-                    if (href.startsWith(window.location.origin)) {
-                        return; 
-                    }
                     e.preventDefault();
-                    window.location.href = window.location.origin + '/proxy?url=' + encodeURIComponent(href);
-                }
-            });
-            // Override form submissions too
-            document.addEventListener('submit', function(e) {
-                const target = e.target;
-                if (target.action) {
-                    const action = target.action;
-                    if (action.startsWith(window.location.origin)) {
+                    const href = target.getAttribute('href');
+                    
+                    if (href.startsWith('http')) {
+                        window.location.href = '${proxyOrigin}/proxy?url=' + encodeURIComponent(href);
                         return;
                     }
+                    
+                    if (href.startsWith('/')) {
+                        window.location.href = '${proxyOrigin}${currentProxyPath}' + href;
+                        return;
+                    }
+                    
+                    window.location.href = target.href;
+                }
+            });
+            
+            document.addEventListener('submit', function(e) {
+                const target = e.target;
+                const action = target.getAttribute('action');
+                if (action) {
                     e.preventDefault();
-                    window.location.href = window.location.origin + '/proxy?url=' + encodeURIComponent(action);
+                    if (action.startsWith('http')) {
+                        window.location.href = '${proxyOrigin}/proxy?url=' + encodeURIComponent(action);
+                    } else if (action.startsWith('/')) {
+                        window.location.href = '${proxyOrigin}${currentProxyPath}' + action;
+                    } else {
+                        const resolved = new URL(action, window.location.href).href;
+                        window.location.href = resolved;
+                    }
                 }
             });
             </script>
             `;
-
+            
             if (html.includes('</body>')) {
                 html = html.replace('</body>', `${scriptInjection}</body>`);
             } else {
                 html += scriptInjection;
             }
-
+            
             res.send(html);
         } else {
             res.send(response.data);
         }
     } catch (error) {
         console.error('Proxy error:', error.message);
-        res.status(500).send('Error fetching URL: ' + error.message);
+        res.status(500).send('Error: ' + error.message);
     }
 });
 
-// SSE Endpoint
-app.get('/events', (req, res) => {
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-
-    const sendEvent = (data) => {
-        res.write(`data: ${JSON.stringify(data)}\n\n`);
-    };
-
-    sendEvent({ message: 'Connected to SSE server' });
-
-    const interval = setInterval(() => {
-        sendEvent({ message: 'Heartbeat', timestamp: new Date() });
-    }, 10000);
-
-    req.on('close', () => {
-        clearInterval(interval);
-    });
-});
-
-// Wildcard handler for resources (images, css, js)
-app.get('*', async (req, res) => {
-    const cookies = parseCookies(req);
-    const proxyBase = cookies.proxy_base ? decodeURIComponent(cookies.proxy_base) : null;
-
-    if (!proxyBase) {
-        return res.status(404).send('Resource not found and no proxy session active.');
+// Handle root-relative paths that escaped the proxy
+app.use((req, res, next) => {
+    if (req.url.startsWith('/browse/')) return next();
+    if (req.url === '/proxy') return next();
+    if (req.url === '/events') return next();
+    
+    const referer = req.get('Referer');
+    if (referer && referer.includes('/browse/')) {
+        const match = referer.match(/\/browse\/(https?)\/([^\/]+)/);
+        if (match) {
+            const protocol = match[1];
+            const host = match[2];
+            res.redirect(`/browse/${protocol}/${host}${req.url}`);
+            return;
+        }
     }
-
-    const targetUrl = proxyBase + req.url;
-
-    try {
-        const response = await axios.get(targetUrl, {
-            responseType: 'arraybuffer',
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Referer': proxyBase
-            }
-        });
-
-        res.set('Content-Type', response.headers['content-type']);
-        res.send(response.data);
-    } catch (error) {
-        // console.error('Resource proxy error:', error.message);
-        res.status(404).send('Not Found');
-    }
+    
+    res.status(404).send('Not Found (Proxy)');
 });
 
 app.listen(PORT, () => {
