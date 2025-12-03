@@ -82,8 +82,22 @@ app.use('/browse/:protocol/:host/*', async (req, res) => {
             validateStatus: () => true 
         });
 
+        // Remove restrictive headers that break iframes
+        delete response.headers['x-frame-options'];
+        delete response.headers['content-security-policy'];
+        delete response.headers['content-security-policy-report-only'];
+        delete response.headers['x-content-type-options'];
+
+        // Forward headers (excluding the ones we deleted)
+        Object.keys(response.headers).forEach(key => {
+            res.setHeader(key, response.headers[key]);
+        });
+
+        // Set permissive Referrer-Policy to help the wildcard handler
+        res.setHeader('Referrer-Policy', 'unsafe-url');
+
         const contentType = response.headers['content-type'];
-        res.set('Content-Type', contentType);
+        // res.set('Content-Type', contentType); // Already set in loop above
         res.status(response.status);
 
         if (contentType && contentType.includes('text/html')) {
@@ -165,7 +179,12 @@ app.use((req, res, next) => {
         }
     }
     
-    res.status(404).send('Not Found (Proxy)');
+    // Fallback: If no referer, we can't guess.
+    // But for Poki, maybe we can try to be smart?
+    // If the request is for a common asset like /favicon.ico, we might ignore it.
+    // But if it's /api/v2/..., it's important.
+    
+    res.status(404).send('Not Found (Proxy - Missing Referer)');
 });
 
 app.listen(PORT, () => {
