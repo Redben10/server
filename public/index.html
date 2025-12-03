@@ -45,7 +45,8 @@
                 if (!value.startsWith('http')) {
                     value = 'https://' + value;
                 }
-                window.location.href = `/proxy?url=${encodeURIComponent(value)}`;
+                // unblocker uses /proxy/URL format
+                window.location.href = `/proxy/${value}`;
             } else {
                 window.location.href = `/search?q=${encodeURIComponent(value)}`;
             }
