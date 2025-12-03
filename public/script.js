@@ -1,48 +1,28 @@
-document.getElementById('proxyForm').addEventListener('submit', function(e) {
+document.getElementById('proxy-form').addEventListener('submit', function(e) {
     e.preventDefault();
-    const input = document.getElementById('urlInput').value.trim();
+    const input = document.getElementById('url-input').value.trim();
     
-    if (!input) return;
-
-    let targetUrl;
-
-    // Simple check if it's a URL
-    // If it contains a space, it's definitely a search
-    // If it doesn't have a dot, it's likely a search (unless localhost)
-    // If it starts with http:// or https://, it's a URL
-    
-    if (input.includes(' ') || !input.includes('.')) {
-        // Treat as search
-        targetUrl = `https://www.google.com/search?q=${encodeURIComponent(input)}`;
-    } else {
-        // Treat as URL
-        targetUrl = input;
-        if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
-            targetUrl = 'https://' + targetUrl;
-        }
+    if (input) {
+        // Redirect to the proxy endpoint
+        // The server handles whether it's a URL or a search query
+        window.location.href = `/proxy?url=${encodeURIComponent(input)}`;
     }
-
-    // Redirect to proxy
-    window.location.href = `/proxy?url=${encodeURIComponent(targetUrl)}`;
 });
 
-// SSE Connection (as requested)
-const statusDiv = document.getElementById('status');
-if (!!window.EventSource) {
-    const source = new EventSource('/status');
+// Connect to SSE endpoint (as requested)
+const eventSource = new EventSource('/events');
 
-    source.addEventListener('message', function(e) {
-        // Just logging or showing status to prove SSE is working
-        // console.log('Server status:', e.data);
-    }, false);
+eventSource.onmessage = function(event) {
+    const data = JSON.parse(event.data);
+    console.log('Server Event:', data);
+    
+    const statusDiv = document.getElementById('status');
+    if (data.message) {
+        statusDiv.textContent = data.message;
+    }
+};
 
-    source.addEventListener('open', function(e) {
-        // console.log("Connection was opened.");
-    }, false);
-
-    source.addEventListener('error', function(e) {
-        if (e.readyState == EventSource.CLOSED) {
-            // console.log("Connection was closed.");
-        }
-    }, false);
-}
+eventSource.onerror = function(err) {
+    console.error('EventSource failed:', err);
+    eventSource.close();
+};

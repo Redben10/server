@@ -1,17 +1,14 @@
 {
-  "name": "simple-web-proxy",
+  "name": "proxy-server",
   "version": "1.0.0",
-  "description": "A simple web proxy to bypass restrictions",
-  "main": "src/server.js",
+  "description": "A simple web proxy to bypass filters",
+  "main": "server.js",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "nodemon src/server.js"
+    "start": "node server.js"
   },
   "dependencies": {
-    "axios": "^1.6.0",
-    "express": "^4.18.2"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.0"
+    "express": "^4.18.2",
+    "axios": "^1.6.2",
+    "cheerio": "^1.0.0-rc.12"
   }
 }
