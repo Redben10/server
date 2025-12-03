@@ -2,12 +2,16 @@
   "name": "simple-web-proxy",
   "version": "1.0.0",
   "description": "A simple web proxy to bypass restrictions",
-  "main": "index.js",
+  "main": "src/server.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "unblocker": "^2.0.0"
+    "axios": "^1.6.0",
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
   }
 }
