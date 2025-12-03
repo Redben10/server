@@ -7,6 +7,17 @@ const PORT = 3000;
 app.use(cors());
 app.use(express.json());
 
+// Helper to parse cookies
+const parseCookies = (req) => {
+    const list = {};
+    const rc = req.headers.cookie;
+    rc && rc.split(';').forEach(function(cookie) {
+        const parts = cookie.split('=');
+        list[parts.shift().trim()] = decodeURI(parts.join('='));
+    });
+    return list;
+};
+
 // Middleware to block chromebook.ccpsnet.net
 app.use((req, res, next) => {
     const blockedDomain = 'chromebook.ccpsnet.net';
@@ -44,21 +55,28 @@ app.get('/proxy', async (req, res) => {
     }
 
     try {
+        // Extract base URL for the cookie
+        const urlObj = new URL(targetUrl);
+        const baseUrl = urlObj.origin;
+
         const response = await axios.get(targetUrl, {
-            responseType: 'arraybuffer', // Handle images/binary
+            responseType: 'arraybuffer',
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': baseUrl
             }
         });
 
         const contentType = response.headers['content-type'];
         res.set('Content-Type', contentType);
+        
+        // Set cookie for subsequent resource requests
+        res.setHeader('Set-Cookie', `proxy_base=${encodeURIComponent(baseUrl)}; Path=/; HttpOnly`);
 
-        // If it's HTML, inject <base> tag to fix relative links
+        // If it's HTML, inject script to handle links
         if (contentType && contentType.includes('text/html')) {
             let html = response.data.toString('utf-8');
-            // Simple injection after <head>
-            const baseTag = `<base href="${targetUrl}">`;
+            
             const scriptInjection = `
             <script>
             document.addEventListener('click', function(e) {
@@ -66,17 +84,22 @@ app.get('/proxy', async (req, res) => {
                 if (target && target.href) {
                     e.preventDefault();
                     const realUrl = target.href;
-                    window.location.href = 'http://localhost:3000/proxy?url=' + encodeURIComponent(realUrl);
+                    // Use current origin to keep using the proxy
+                    window.location.href = window.location.origin + '/proxy?url=' + encodeURIComponent(realUrl);
+                }
+            });
+            // Override form submissions too
+            document.addEventListener('submit', function(e) {
+                const target = e.target;
+                if (target.action) {
+                    e.preventDefault();
+                    const realUrl = target.action;
+                    // This is a simplification, handling POST/GET params is harder
+                    window.location.href = window.location.origin + '/proxy?url=' + encodeURIComponent(realUrl);
                 }
             });
             </script>
             `;
-            
-            if (html.includes('<head>')) {
-                html = html.replace('<head>', `<head>${baseTag}`);
-            } else {
-                html = baseTag + html;
-            }
 
             if (html.includes('</body>')) {
                 html = html.replace('</body>', `${scriptInjection}</body>`);
@@ -86,7 +109,6 @@ app.get('/proxy', async (req, res) => {
 
             res.send(html);
         } else {
-            // For non-HTML (images, css, etc), send as is
             res.send(response.data);
         }
     } catch (error) {
@@ -95,8 +117,7 @@ app.get('/proxy', async (req, res) => {
     }
 });
 
-// SSE Endpoint (Only if needed, as requested)
-// This is a placeholder to show how SSE would be implemented if the user needs it for status updates
+// SSE Endpoint
 app.get('/events', (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -108,7 +129,6 @@ app.get('/events', (req, res) => {
 
     sendEvent({ message: 'Connected to SSE server' });
 
-    // Keep connection alive
     const interval = setInterval(() => {
         sendEvent({ message: 'Heartbeat', timestamp: new Date() });
     }, 10000);
@@ -116,6 +136,34 @@ app.get('/events', (req, res) => {
     req.on('close', () => {
         clearInterval(interval);
     });
+});
+
+// Wildcard handler for resources (images, css, js)
+app.get('*', async (req, res) => {
+    const cookies = parseCookies(req);
+    const proxyBase = cookies.proxy_base ? decodeURIComponent(cookies.proxy_base) : null;
+
+    if (!proxyBase) {
+        return res.status(404).send('Resource not found and no proxy session active.');
+    }
+
+    const targetUrl = proxyBase + req.url;
+
+    try {
+        const response = await axios.get(targetUrl, {
+            responseType: 'arraybuffer',
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': proxyBase
+            }
+        });
+
+        res.set('Content-Type', response.headers['content-type']);
+        res.send(response.data);
+    } catch (error) {
+        // console.error('Resource proxy error:', error.message);
+        res.status(404).send('Not Found');
+    }
 });
 
 app.listen(PORT, () => {
