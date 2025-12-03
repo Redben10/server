@@ -116,13 +116,17 @@ app.use('/browse/:protocol/:host/*', async (req, res) => {
             // Attempt to bypass frame busting
             try {
                 if (window.self !== window.top) {
-                    // We can't overwrite window.top, but we can try to stop navigation
-                    window.onbeforeunload = function() {
-                        // This is annoying for users, so maybe not.
-                        // Instead, let's just hope the target="_self" replacement works.
-                    };
+                    window.onbeforeunload = function() { };
                 }
             } catch(e) {}
+
+            document.addEventListener('DOMContentLoaded', function() {
+                // Force forms to submit to self
+                const forms = document.querySelectorAll('form');
+                forms.forEach(f => {
+                    if (!f.target) f.target = '_self';
+                });
+            });
 
             document.addEventListener('click', function(e) {
                 const target = e.target.closest('a');
@@ -154,16 +158,16 @@ app.use('/browse/:protocol/:host/*', async (req, res) => {
             document.addEventListener('submit', function(e) {
                 const target = e.target;
                 const action = target.getAttribute('action');
-                if (action) {
-                    e.preventDefault();
-                    if (action.startsWith('http')) {
-                        window.location.href = '${proxyOrigin}/proxy?url=' + encodeURIComponent(action);
-                    } else if (action.startsWith('/')) {
-                        window.location.href = '${proxyOrigin}${currentProxyPath}' + action;
-                    } else {
-                        const resolved = new URL(action, window.location.href).href;
-                        window.location.href = resolved;
-                    }
+                if (!action) return; // Let browser handle submit to self
+
+                e.preventDefault();
+                if (action.startsWith('http')) {
+                    window.location.href = '${proxyOrigin}/proxy?url=' + encodeURIComponent(action);
+                } else if (action.startsWith('/')) {
+                    window.location.href = '${proxyOrigin}${currentProxyPath}' + action;
+                } else {
+                    const resolved = new URL(action, window.location.href).href;
+                    window.location.href = resolved;
                 }
             });
             </script>
